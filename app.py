@@ -536,11 +536,49 @@ def calculer_position(proba, capital, atr, prix, kelly_frac=0.126, rr=2.0):
         "sl_dist"    :sl
     }
 
+
+def is_market_open():
+    """Vérifie si le marché Gold est ouvert"""
+    now = datetime.now(timezone.utc)
+    day = now.weekday()  # 0=Lundi, 6=Dimanche
+    hour = now.hour
+
+    # Marché fermé le weekend
+    # Gold ferme vendredi 22h UTC
+    # Gold ouvre dimanche 22h UTC
+    if day == 6:  # Dimanche
+        if hour < 22:
+            return False, "Dimanche — Marché ouvre à 22h00 UTC"
+    if day == 5:  # Samedi
+        return False, "Samedi — Marché fermé"
+    if day == 4:  # Vendredi
+        if hour >= 22:
+            return False, "Weekend — Marché fermé"
+
+    return True, "Marché ouvert ✅"
+
 # ============================================
 # INTERFACE
 # ============================================
 st.title("🥇 XAUUSD ML Trading Scanner")
 st.caption("Système ML — SMC + Technique + Macro + Sentiment")
+
+# Vérification marché
+market_ok, market_msg = is_market_open()
+if not market_ok:
+    st.warning(f"""
+    ⚠️ **{market_msg}**
+
+    Le marché XAUUSD (Gold Futures) est actuellement fermé.
+
+    **Horaires d'ouverture :**
+    - Dimanche 22h00 UTC → Vendredi 22h00 UTC
+    - Disponible 24h/24 en semaine
+
+    Les données affichées sont les **dernières disponibles**.
+    """)
+
+
 
 # Sidebar
 with st.sidebar:
@@ -568,8 +606,12 @@ with st.spinner("🔧 Calcul features..."):
     df_app = prepare_features(market_data)
 
 if df_app is None or len(df_app)==0:
-    st.error("❌ Erreur dans le calcul des features — données insuffisantes")
-    st.stop()
+    if not is_market_open():
+        st.info("📊 Marché fermé — En attente de l'ouverture (Dimanche 22h UTC)")
+        st.stop()
+    else:
+        st.error("❌ Erreur dans le calcul des features")
+        st.stop()
 
 # Données actuelles
 derniere    = df_app.iloc[-1]
