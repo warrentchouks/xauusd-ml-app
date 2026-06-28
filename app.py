@@ -148,15 +148,15 @@ print(f"✅ Après merge D1 : {df_merged.shape}")
 df_merged = df_merged.ffill().dropna()
 print(f"✅ Final : {df_merged.shape}")
 
-if len(df_merged) > 0:
-    print(f"\n🎉 CORRECTION RÉUSSIE !")
-    print(f"   Dernière bougie : {df_merged.index[-1]}")
-    print(f"   Prix : {df_merged['Close'].iloc[-1]:.2f}")
-else:
-    print(f"\n❌ Toujours vide — on cherche plus loin")
-    print(f"H4 index range: {df_h4.index[0]} → {df_h4.index[-1]}")
-    print(f"D1 index range: {df_d1.index[0]} → {df_d1.index[-1]}")
-    print(f"H1 index range: {df.index[0]} → {df.index[-1]}")
+         if len(df_merged) > 0:
+                 print(f"\n🎉 CORRECTION RÉUSSIE !")
+                 print(f"   Dernière bougie : {df_merged.index[-1]}")
+                print(f"   Prix : {df_merged['Close'].iloc[-1]:.2f}")
+          else:
+                 print(f"\n❌ Toujours vide — on cherche plus loin")
+                 print(f"H4 index range: {df_h4.index[0]} → {df_h4.index[-1]}")
+                 print(f"D1 index range: {df_d1.index[0]} → {df_d1.index[-1]}")
+                 print(f"H1 index range: {df.index[0]} → {df.index[-1]}")
         # RSI H1
         df["RSI"]    = ta.momentum.rsi(df["Close"],14)
         df["RSI_ob"] = (df["RSI"]>70).astype(int)
