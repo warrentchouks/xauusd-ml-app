@@ -1,0 +1,16 @@
+streamlit
+yfinance
+xgboost
+lightgbm
+scikit-learn
+ta
+pandas
+numpy
+plotly
+requests
+beautifulsoup4
+lxml
+vaderSentiment
+fredapi
+joblib
+pytz
