@@ -99,10 +99,18 @@ def get_market_data():
     for nom, ticker in actifs.items():
         try:
             df = yf.download(ticker, interval="1h", period="60d")
-            df.columns = df.columns.get_level_values(0)
+            # Correction multi-index
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df.columns = [str(c) for c in df.columns]
             df.index = pd.to_datetime(df.index, utc=True)
-            data[nom] = df
-        except:
+            # Garder seulement colonnes OHLCV
+            cols = [c for c in df.columns
+                   if c in ["Open","High","Low","Close","Volume"]]
+            df = df[cols]
+            if len(df) > 0:
+                data[nom] = df
+        except Exception as e:
             pass
     return data
 
@@ -766,3 +774,4 @@ Dernière mise à jour: {datetime.now(timezone.utc).strftime("%H:%M UTC")} |
 ⚠️ Pas un conseil financier
 </div>
 """, unsafe_allow_html=True)
+"Fix features calculation"
