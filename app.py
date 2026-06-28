@@ -59,104 +59,98 @@ def download_ticker(ticker, interval="1h", period="60d"):
     try:
         df = yf.download(ticker, interval=interval,
                         period=period, progress=False)
+        # Correction multi-index
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df.columns = [str(c) for c in df.columns]
         df.index = pd.to_datetime(df.index, utc=True)
+        # S'assurer que les colonnes existent
         needed = ["Open","High","Low","Close","Volume"]
         for col in needed:
             if col not in df.columns:
                 df[col] = np.nan
         return df[needed].copy()
-    except:
+    except Exception as e:
         return None
 
-data = {}
-for nom, ticker in {
-    "GOLD":"GC=F","DXY":"DX-Y.NYB","VIX":"^VIX",
-    "US10Y":"^TNX","SILVER":"SI=F","SP500":"^GSPC"}.items():
-    df = download_ticker(ticker)
-    if df is not None and len(df) > 10:
-        data[nom] = df
+@st.cache_data(ttl=900)
+def get_all_data():
+    actifs = {
+        "GOLD"  : "GC=F",
+        "DXY"   : "DX-Y.NYB",
+        "VIX"   : "^VIX",
+        "US10Y" : "^TNX",
+        "SILVER": "SI=F",
+        "SP500" : "^GSPC",
+    }
+    data = {}
+    for nom, ticker in actifs.items():
+        df = download_ticker(ticker)
+        if df is not None and len(df) > 10:
+            data[nom] = df
+    return data
 
-df = data["GOLD"].copy()
-for nom in ["DXY","VIX","US10Y","SILVER","SP500"]:
-    if nom in data:
-        tmp = data[nom][["Close"]].rename(columns={"Close": nom})
-        df = pd.merge_asof(df.sort_index(), tmp.sort_index(),
-                         left_index=True, right_index=True,
-                         direction="backward")
-df = df.ffill().dropna()
+# ============================================
+# PRÉPARATION FEATURES
+# ============================================
+@st.cache_data(ttl=900)
+def prepare_features(_data):
+    try:
+        if "GOLD" not in _data:
+            return None
 
-print(f"✅ Gold H1 : {df.shape}")
-print(f"   Index type : {type(df.index)}")
-print(f"   Index sample : {df.index[0]}")
+        df = _data["GOLD"].copy()
 
-# Resample H4 et D1
-df_h4 = df[["Open","High","Low","Close","Volume"]].resample("4h").agg({
-    "Open":"first","High":"max","Low":"min",
-    "Close":"last","Volume":"sum"}).dropna()
+        # Ajouter actifs macro
+        for nom in ["DXY","VIX","US10Y","SILVER","SP500"]:
+            if nom in _data:
+                tmp = _data[nom][["Close"]].rename(
+                    columns={"Close": nom})
+                df = pd.merge_asof(
+                    df.sort_index(),
+                    tmp.sort_index(),
+                    left_index=True,
+                    right_index=True,
+                    direction="backward")
 
-df_d1 = df[["Open","High","Low","Close","Volume"]].resample("1D").agg({
-    "Open":"first","High":"max","Low":"min",
-    "Close":"last","Volume":"sum"}).dropna()
+        df = df.ffill().dropna()
 
-print(f"✅ H4 : {df_h4.shape} | index: {df_h4.index[0]}")
-print(f"✅ D1 : {df_d1.shape} | index: {df_d1.index[0]}")
+        if len(df) < 200:
+            return None
 
-# EMA H4
-df_h4["EMA20_H4"] = ta.trend.ema_indicator(df_h4["Close"],20)
-df_h4["EMA50_H4"] = ta.trend.ema_indicator(df_h4["Close"],50)
-df_h4["RSI_H4"]   = ta.momentum.rsi(df_h4["Close"],14)
-df_h4["Trend_H4"] = (df_h4["EMA20_H4"]>df_h4["EMA50_H4"]).astype(int)
+        # Resample H4 et D1
+        def resample_tf(df_in, tf):
+            return df_in[["Open","High","Low",
+                          "Close","Volume"]].resample(tf).agg({
+                "Open":"first","High":"max",
+                "Low":"min","Close":"last",
+                "Volume":"sum"}).dropna()
 
-# EMA D1
-df_d1["EMA20_D1"]  = ta.trend.ema_indicator(df_d1["Close"],20)
-df_d1["EMA50_D1"]  = ta.trend.ema_indicator(df_d1["Close"],50)
-df_d1["EMA200_D1"] = ta.trend.ema_indicator(df_d1["Close"],200)
-df_d1["RSI_D1"]    = ta.momentum.rsi(df_d1["Close"],14)
-df_d1["Trend_D1"]  = (df_d1["EMA20_D1"]>df_d1["EMA50_D1"]).astype(int)
+        df_h4 = resample_tf(df, "4h")
+        df_d1 = resample_tf(df, "1D")
 
-# CORRECTION — Forward fill avant merge
-df_h4_ff = df_h4[["Trend_H4","EMA20_H4",
-                   "EMA50_H4","RSI_H4"]].ffill()
-df_d1_ff = df_d1[["Trend_D1","EMA20_D1","EMA50_D1",
-                   "EMA200_D1","RSI_D1"]].ffill()
+        # EMA H4
+        df_h4["EMA20_H4"] = ta.trend.ema_indicator(df_h4["Close"],20)
+        df_h4["EMA50_H4"] = ta.trend.ema_indicator(df_h4["Close"],50)
+        df_h4["RSI_H4"]   = ta.momentum.rsi(df_h4["Close"],14)
+        df_h4["Trend_H4"] = (df_h4["EMA20_H4"]>df_h4["EMA50_H4"]).astype(int)
 
-print(f"\n✅ H4 après ffill : {df_h4_ff.dropna().shape}")
-print(f"✅ D1 après ffill : {df_d1_ff.dropna().shape}")
+        # EMA D1
+        df_d1["EMA20_D1"]  = ta.trend.ema_indicator(df_d1["Close"],20)
+        df_d1["EMA50_D1"]  = ta.trend.ema_indicator(df_d1["Close"],50)
+        df_d1["EMA200_D1"] = ta.trend.ema_indicator(df_d1["Close"],200)
+        df_d1["RSI_D1"]    = ta.momentum.rsi(df_d1["Close"],14)
+        df_d1["Trend_D1"]  = (df_d1["EMA20_D1"]>df_d1["EMA50_D1"]).astype(int)
 
-# Merge corrigé
-df_merged = pd.merge_asof(
-    df.sort_index(),
-    df_h4_ff.dropna().sort_index(),
-    left_index=True,
-    right_index=True,
-    direction="backward"
-)
-print(f"\n✅ Après merge H4 : {df_merged.shape}")
+        # Merge H4 et D1
+        df = pd.merge_asof(df.sort_index(),
+            df_h4[["Trend_H4","EMA20_H4","EMA50_H4","RSI_H4"]].sort_index(),
+            left_index=True, right_index=True, direction="backward")
+        df = pd.merge_asof(df.sort_index(),
+            df_d1[["Trend_D1","EMA20_D1","EMA50_D1",
+                   "EMA200_D1","RSI_D1"]].sort_index(),
+            left_index=True, right_index=True, direction="backward")
 
-df_merged = pd.merge_asof(
-    df_merged.sort_index(),
-    df_d1_ff.dropna().sort_index(),
-    left_index=True,
-    right_index=True,
-    direction="backward"
-)
-print(f"✅ Après merge D1 : {df_merged.shape}")
-
-df_merged = df_merged.ffill().dropna()
-print(f"✅ Final : {df_merged.shape}")
-
-         if len(df_merged) > 0:
-                 print(f"\n🎉 CORRECTION RÉUSSIE !")
-                 print(f"   Dernière bougie : {df_merged.index[-1]}")
-                print(f"   Prix : {df_merged['Close'].iloc[-1]:.2f}")
-          else:
-                 print(f"\n❌ Toujours vide — on cherche plus loin")
-                 print(f"H4 index range: {df_h4.index[0]} → {df_h4.index[-1]}")
-                 print(f"D1 index range: {df_d1.index[0]} → {df_d1.index[-1]}")
-                 print(f"H1 index range: {df.index[0]} → {df.index[-1]}")
         # RSI H1
         df["RSI"]    = ta.momentum.rsi(df["Close"],14)
         df["RSI_ob"] = (df["RSI"]>70).astype(int)
