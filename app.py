@@ -459,6 +459,270 @@ def get_score(df_app, model_xgb, model_lgb, model_xgb2, features):
         st.error(f"Erreur scoring: {e}")
         return 0.5, 0.5, 0.5, 0.5
 
+
+@st.cache_data(ttl=300)  # Cache 5 minutes pour M15
+def get_m15_data():
+    """Télécharge et analyse les données M15"""
+    try:
+        df = yf.download("GC=F", interval="15m",
+                        period="5d", progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df.columns = [str(c) for c in df.columns]
+        df.index = pd.to_datetime(df.index, utc=True)
+        needed = ["Open","High","Low","Close","Volume"]
+        for col in needed:
+            if col not in df.columns:
+                df[col] = np.nan
+        df = df[needed].copy()
+
+        if len(df) < 50:
+            return None
+
+        # Features M15
+        df["RSI_M15"]   = ta.momentum.rsi(df["Close"], 14)
+        df["EMA20_M15"] = ta.trend.ema_indicator(df["Close"], 20)
+        df["EMA50_M15"] = ta.trend.ema_indicator(df["Close"], 50)
+
+        macd_m15 = ta.trend.MACD(df["Close"])
+        df["MACD_M15"]     = macd_m15.macd()
+        df["MACD_sig_M15"] = macd_m15.macd_signal()
+        df["MACD_hist_M15"]= macd_m15.macd_diff()
+
+        df["ATR_M15"] = ta.volatility.average_true_range(
+            df["High"], df["Low"], df["Close"], 14)
+
+        bb_m15 = ta.volatility.BollingerBands(df["Close"])
+        df["BB_upper_M15"] = bb_m15.bollinger_hband()
+        df["BB_lower_M15"] = bb_m15.bollinger_lband()
+        df["BB_pct_M15"]   = ((df["Close"]-df["BB_lower_M15"])/
+                               (df["BB_upper_M15"]-df["BB_lower_M15"]))
+
+        # SMC M15
+        df["BOS_bull_M15"] = (df["High"] >
+            df["High"].shift(1).rolling(5).max()).astype(int)
+        df["BOS_bear_M15"] = (df["Low"] 
+            df["Low"].shift(1).rolling(5).min()).astype(int)
+
+        df["OB_bull_M15"] = (
+            (df["Close"].shift(1) < df["Open"].shift(1)) &
+            (df["Close"] > df["Open"]) &
+            (df["Close"] > df["High"].shift(1))
+        ).astype(int)
+
+        df["OB_bear_M15"] = (
+            (df["Close"].shift(1) > df["Open"].shift(1)) &
+            (df["Close"] < df["Open"]) &
+            (df["Close"] < df["Low"].shift(1))
+        ).astype(int)
+
+        df["FVG_bull_M15"] = (
+            (df["Low"] > df["High"].shift(2)) &
+            (df["Low"].shift(1) > df["High"].shift(2))
+        ).astype(int)
+
+        df["FVG_bear_M15"] = (
+            (df["High"] < df["Low"].shift(2)) &
+            (df["High"].shift(1) < df["Low"].shift(2))
+        ).astype(int)
+
+        # Trend M15
+        df["Trend_M15"] = (df["EMA20_M15"] > df["EMA50_M15"]).astype(int)
+
+        # Chandeliers M15
+        df["Body_M15"]       = abs(df["Close"]-df["Open"])
+        df["Upper_wick_M15"] = df["High"]-df[["Close","Open"]].max(axis=1)
+        df["Lower_wick_M15"] = df[["Close","Open"]].min(axis=1)-df["Low"]
+
+        df["Hammer_M15"] = (
+            (df["Lower_wick_M15"] > df["Body_M15"]*2) &
+            (df["Upper_wick_M15"] < df["Body_M15"]*0.5) &
+            (df["Close"] > df["Open"])
+        ).astype(int)
+
+        df["Bear_pin_M15"] = (
+            (df["Upper_wick_M15"] > df["Body_M15"]*2) &
+            (df["Lower_wick_M15"] < df["Body_M15"]*0.5) &
+            (df["Close"] < df["Open"])
+        ).astype(int)
+
+        df["Bull_engulf_M15"] = (
+            (df["Close"].shift(1) < df["Open"].shift(1)) &
+            (df["Close"] > df["Open"]) &
+            (df["Close"] > df["Open"].shift(1)) &
+            (df["Open"] < df["Close"].shift(1))
+        ).astype(int)
+
+        df["Bear_engulf_M15"] = (
+            (df["Close"].shift(1) > df["Open"].shift(1)) &
+            (df["Close"] < df["Open"]) &
+            (df["Close"] < df["Open"].shift(1)) &
+            (df["Open"] > df["Close"].shift(1))
+        ).astype(int)
+
+        return df.dropna()
+
+    except Exception as e:
+        return None
+
+def analyser_setup_m15(df_m15, signal_h1, prix_actuel, atr_h1):
+    """
+    Analyse le setup d'entrée précis sur M15
+    basé sur le signal H1
+    """
+    if df_m15 is None or len(df_m15) < 20:
+        return None
+
+    derniere = df_m15.iloc[-1]
+    prev     = df_m15.iloc[-2]
+
+    rsi_m15      = float(derniere["RSI_M15"])
+    macd_m15     = float(derniere["MACD_M15"])
+    macd_sig_m15 = float(derniere["MACD_sig_M15"])
+    trend_m15    = int(derniere["Trend_M15"])
+    atr_m15      = float(derniere["ATR_M15"])
+    bb_pct       = float(derniere["BB_pct_M15"])
+    prix_m15     = float(derniere["Close"])
+
+    # Scores de setup
+    score_long  = 0
+    score_short = 0
+    raisons_long  = []
+    raisons_short = []
+
+    if signal_h1 == "LONG":
+        # Critères entrée LONG sur M15
+        if rsi_m15 < 50:
+            score_long += 2
+            raisons_long.append(f"RSI M15 en zone neutre ({rsi_m15:.1f})")
+        if rsi_m15 < 40:
+            score_long += 1
+            raisons_long.append(f"RSI M15 survendu ({rsi_m15:.1f}) ✅")
+        if macd_m15 > macd_sig_m15:
+            score_long += 2
+            raisons_long.append("MACD M15 haussier ✅")
+        if int(derniere["BOS_bull_M15"]) == 1:
+            score_long += 2
+            raisons_long.append("BOS haussier M15 ✅")
+        if int(derniere["OB_bull_M15"]) == 1:
+            score_long += 3
+            raisons_long.append("Order Block haussier M15 ✅")
+        if int(derniere["FVG_bull_M15"]) == 1:
+            score_long += 2
+            raisons_long.append("Fair Value Gap haussier M15 ✅")
+        if int(derniere["Hammer_M15"]) == 1:
+            score_long += 2
+            raisons_long.append("Hammer M15 ✅")
+        if int(derniere["Bull_engulf_M15"]) == 1:
+            score_long += 3
+            raisons_long.append("Engulfing haussier M15 ✅")
+        if bb_pct < 0.3:
+            score_long += 1
+            raisons_long.append("Prix bas des BB M15 ✅")
+        if trend_m15 == 1:
+            score_long += 1
+            raisons_long.append("Tendance M15 haussière ✅")
+
+        # Zone d'entrée
+        support_m15 = df_m15["Low"].tail(10).min()
+        resistance_m15 = df_m15["High"].tail(10).max()
+        entry_low  = prix_m15 - atr_m15 * 0.3
+        entry_high = prix_m15 + atr_m15 * 0.2
+
+        setup = {
+            "direction"   : "LONG",
+            "score"       : score_long,
+            "raisons"     : raisons_long,
+            "entry_low"   : entry_low,
+            "entry_high"  : entry_high,
+            "entry_ideal" : prix_m15,
+            "sl"          : support_m15 - atr_m15 * 0.5,
+            "tp1"         : prix_m15 + atr_h1 * 1.5,
+            "tp2"         : prix_m15 + atr_h1 * 3.0,
+            "rsi_m15"     : rsi_m15,
+            "atr_m15"     : atr_m15,
+        }
+
+    elif signal_h1 == "SHORT":
+        # Critères entrée SHORT sur M15
+        if rsi_m15 > 50:
+            score_short += 2
+            raisons_short.append(f"RSI M15 en zone neutre ({rsi_m15:.1f})")
+        if rsi_m15 > 60:
+            score_short += 1
+            raisons_short.append(f"RSI M15 suracheté ({rsi_m15:.1f}) ✅")
+        if macd_m15 < macd_sig_m15:
+            score_short += 2
+            raisons_short.append("MACD M15 baissier ✅")
+        if int(derniere["BOS_bear_M15"]) == 1:
+            score_short += 2
+            raisons_short.append("BOS baissier M15 ✅")
+        if int(derniere["OB_bear_M15"]) == 1:
+            score_short += 3
+            raisons_short.append("Order Block baissier M15 ✅")
+        if int(derniere["FVG_bear_M15"]) == 1:
+            score_short += 2
+            raisons_short.append("Fair Value Gap baissier M15 ✅")
+        if int(derniere["Bear_pin_M15"]) == 1:
+            score_short += 2
+            raisons_short.append("Pin Bar baissière M15 ✅")
+        if int(derniere["Bear_engulf_M15"]) == 1:
+            score_short += 3
+            raisons_short.append("Engulfing baissier M15 ✅")
+        if bb_pct > 0.7:
+            score_short += 1
+            raisons_short.append("Prix haut des BB M15 ✅")
+        if trend_m15 == 0:
+            score_short += 1
+            raisons_short.append("Tendance M15 baissière ✅")
+
+        # Zone d'entrée
+        resistance_m15 = df_m15["High"].tail(10).max()
+        support_m15    = df_m15["Low"].tail(10).min()
+        entry_low  = prix_m15 - atr_m15 * 0.2
+        entry_high = prix_m15 + atr_m15 * 0.3
+
+        setup = {
+            "direction"   : "SHORT",
+            "score"       : score_short,
+            "raisons"     : raisons_short,
+            "entry_low"   : entry_low,
+            "entry_high"  : entry_high,
+            "entry_ideal" : prix_m15,
+            "sl"          : resistance_m15 + atr_m15 * 0.5,
+            "tp1"         : prix_m15 - atr_h1 * 1.5,
+            "tp2"         : prix_m15 - atr_h1 * 3.0,
+            "rsi_m15"     : rsi_m15,
+            "atr_m15"     : atr_m15,
+        }
+
+    else:
+        return None
+
+    # Qualité du setup
+    max_score = 17
+    pct_score = setup["score"] / max_score * 100
+
+    if pct_score >= 70:
+        setup["qualite"] = "A+"
+        setup["qualite_color"] = "#00ff88"
+        setup["recommandation"] = "✅ SETUP EXCELLENT — Entrée recommandée"
+    elif pct_score >= 50:
+        setup["qualite"] = "A"
+        setup["qualite_color"] = "#58a6ff"
+        setup["recommandation"] = "✅ BON SETUP — Entrée possible"
+    elif pct_score >= 35:
+        setup["qualite"] = "B"
+        setup["qualite_color"] = "#ffaa00"
+        setup["recommandation"] = "⚠️ SETUP MOYEN — Attendre confirmation"
+    else:
+        setup["qualite"] = "C"
+        setup["qualite_color"] = "#ff4466"
+        setup["recommandation"] = "❌ SETUP FAIBLE — Ne pas trader"
+
+    setup["pct_score"] = pct_score
+    return setup
+
 def get_sentiment():
     try:
         analyzer = SentimentIntensityAnalyzer()
@@ -739,6 +1003,190 @@ if events:
             st.caption(timing)
 else:
     st.info("Pas d'événements majeurs")
+
+
+# ============================================
+# SECTION M15 — ENTRÉE PRÉCISE
+# ============================================
+st.divider()
+st.subheader("🎯 Analyse M15 — Entrée Précise")
+
+if signal != "ATTENDRE":
+    with st.spinner("📊 Analyse M15 en cours..."):
+        df_m15 = get_m15_data()
+        setup  = analyser_setup_m15(df_m15, signal, prix, atr)
+
+    if setup:
+        # Qualité du setup
+        col_s1, col_s2, col_s3 = st.columns([1,2,1])
+
+        with col_s1:
+            st.markdown(f"""
+            <div style="background:#161b22;border:2px solid
+            {setup["qualite_color"]};border-radius:10px;
+            padding:20px;text-align:center;">
+            <h1 style="color:{setup["qualite_color"]};
+            font-size:60px;margin:0;">
+            {setup["qualite"]}</h1>
+            <p style="color:{setup["qualite_color"]};">
+            Qualité du Setup</p>
+            <p style="color:#888;">
+            Score: {setup["pct_score"]:.0f}%</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with col_s2:
+            st.markdown(f"""
+            <div style="background:#161b22;border:1px solid #30363d;
+            border-radius:10px;padding:20px;">
+            <h3 style="color:white;">
+            📍 Zone d'Entrée M15</h3>
+            <p style="color:#58a6ff;font-size:20px;">
+            🎯 Entrée idéale : <b>{setup["entry_ideal"]:.2f}</b></p>
+            <p style="color:#888;">
+            Zone : {setup["entry_low"]:.2f} — {setup["entry_high"]:.2f}</p>
+            <hr style="border-color:#30363d;">
+            <p style="color:#ff4466;">
+            🛑 Stop Loss : <b>{setup["sl"]:.2f}</b></p>
+            <p style="color:#00ff88;">
+            🎯 TP1 : <b>{setup["tp1"]:.2f}</b>
+            (R/R 1:1.5)</p>
+            <p style="color:#00ff88;">
+            🎯 TP2 : <b>{setup["tp2"]:.2f}</b>
+            (R/R 1:3)</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with col_s3:
+            st.markdown(f"""
+            <div style="background:#161b22;border:1px solid #30363d;
+            border-radius:10px;padding:20px;">
+            <h3 style="color:white;">📊 M15 Indicateurs</h3>
+            <p style="color:#888;">RSI M15 :
+            <b style="color:white;">{setup["rsi_m15"]:.1f}</b></p>
+            <p style="color:#888;">ATR M15 :
+            <b style="color:white;">{setup["atr_m15"]:.2f}</b></p>
+            </div>
+            """, unsafe_allow_html=True)
+
+        # Recommandation
+        st.markdown(f"""
+        <div style="background:#161b22;border:2px solid
+        {setup["qualite_color"]};border-radius:10px;
+        padding:15px;margin-top:10px;text-align:center;">
+        <h3 style="color:{setup["qualite_color"]};">
+        {setup["recommandation"]}</h3>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Raisons du setup
+        st.markdown("**✅ Confirmations détectées :**")
+        if setup["raisons"]:
+            cols_r = st.columns(2)
+            for i, raison in enumerate(setup["raisons"]):
+                with cols_r[i%2]:
+                    st.markdown(f"• {raison}")
+        else:
+            st.warning("Aucune confirmation M15 — Attendre")
+
+        # Graphique M15
+        if df_m15 is not None and len(df_m15) > 20:
+            st.markdown("**📈 Graphique M15 — 50 dernières bougies**")
+            df_m15_chart = df_m15.tail(50)
+
+            fig_m15 = make_subplots(
+                rows=2, cols=1,
+                shared_xaxes=True,
+                row_heights=[0.7, 0.3],
+                subplot_titles=["Prix M15","RSI M15"])
+
+            fig_m15.add_trace(go.Candlestick(
+                x=df_m15_chart.index,
+                open=df_m15_chart["Open"],
+                high=df_m15_chart["High"],
+                low=df_m15_chart["Low"],
+                close=df_m15_chart["Close"],
+                increasing_line_color="#00ff88",
+                decreasing_line_color="#ff4466",
+                name="M15"), row=1, col=1)
+
+            # EMA M15
+            fig_m15.add_trace(go.Scatter(
+                x=df_m15_chart.index,
+                y=df_m15_chart["EMA20_M15"],
+                line=dict(color="#58a6ff",width=1),
+                name="EMA20"), row=1, col=1)
+            fig_m15.add_trace(go.Scatter(
+                x=df_m15_chart.index,
+                y=df_m15_chart["EMA50_M15"],
+                line=dict(color="#ff8800",width=1),
+                name="EMA50"), row=1, col=1)
+
+            # Zone entrée
+            fig_m15.add_hrect(
+                y0=setup["entry_low"],
+                y1=setup["entry_high"],
+                fillcolor="#58a6ff",
+                opacity=0.1,
+                line_width=0,
+                row=1, col=1)
+
+            # SL et TP
+            fig_m15.add_hline(
+                y=setup["sl"],
+                line_dash="dash",
+                line_color="#ff4466",
+                annotation_text="SL",
+                row=1, col=1)
+            fig_m15.add_hline(
+                y=setup["tp1"],
+                line_dash="dash",
+                line_color="#00ff88",
+                annotation_text="TP1",
+                row=1, col=1)
+            fig_m15.add_hline(
+                y=setup["tp2"],
+                line_dash="dot",
+                line_color="#00ff88",
+                annotation_text="TP2",
+                row=1, col=1)
+
+            # RSI M15
+            fig_m15.add_trace(go.Scatter(
+                x=df_m15_chart.index,
+                y=df_m15_chart["RSI_M15"],
+                line=dict(color="#c678dd",width=1.5),
+                name="RSI M15"), row=2, col=1)
+            fig_m15.add_hline(y=70,line_dash="dash",
+                line_color="#ff4466",row=2,col=1)
+            fig_m15.add_hline(y=30,line_dash="dash",
+                line_color="#00ff88",row=2,col=1)
+
+            fig_m15.update_layout(
+                height=500,
+                paper_bgcolor="#0d1117",
+                plot_bgcolor="#161b22",
+                font=dict(color="white"),
+                xaxis_rangeslider_visible=False,
+                showlegend=True)
+            fig_m15.update_xaxes(gridcolor="#1e2d3d")
+            fig_m15.update_yaxes(gridcolor="#1e2d3d")
+
+            st.plotly_chart(fig_m15, use_container_width=True)
+
+    else:
+        st.info("📊 Données M15 insuffisantes — Marché peut-être fermé")
+
+else:
+    st.info("""
+    ⏸️ **Signal H1 : ATTENDRE**
+
+    Pas de setup M15 à analyser pour le moment.
+    Le score de confiance est insuffisant.
+
+    → Attends un signal H1 clair (> 65%)
+    → Reviens dans 1-2 heures
+    """)
 
 st.divider()
 
