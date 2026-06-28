@@ -501,7 +501,7 @@ def get_m15_data():
         # SMC M15
         df["BOS_bull_M15"] = (df["High"] >
             df["High"].shift(1).rolling(5).max()).astype(int)
-        df["BOS_bear_M15"] = (df["Low"] 
+        df["BOS_bear_M15"] = (df["Low"] <
             df["Low"].shift(1).rolling(5).min()).astype(int)
 
         df["OB_bull_M15"] = (
