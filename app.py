@@ -468,7 +468,7 @@ def get_fred(key):
 @st.cache_data(ttl=300)
 def get_m15(signal, prix, atr_h1):
     try:
-        m = download_data("GC=F", "15m", "5d")
+        m = download_data("GC=F", "15m", "60d")
         if m is None or len(m) < 50:
             return None
         m["RSI"]   = ta.momentum.rsi(m["Close"], 14)
